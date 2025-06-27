@@ -21,5 +21,5 @@ def predict():
     return jsonify(action=int(a), signal=sig)
 
 if __name__ == '__main__':
-
+    # FIXED HOST AND PORT
     app.run(host='0.0.0.0', port=10000)
