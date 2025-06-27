@@ -9,7 +9,7 @@ import pandas as pd
 from stable_baselines3 import PPO
 
 MODEL = PPO.load('ppo_hft_scalper.zip')
-df_all = pd.read_hdf('XAUUSD_M1_sample.h5', key='data')  # or full file
+
 
 app = Flask(__name__)
 @app.route('/predict', methods=['POST'])
