@@ -145,7 +145,14 @@ def select_picks(rows: pd.DataFrame,
         comps = [np.asarray(c[key], dtype=float) for c in component_probs.values() if key in c]
         if len(comps) >= 2:
             stack = np.vstack(comps)
-            disagreement = np.nanmax(stack, axis=0) - np.nanmin(stack, axis=0)
+            # Rows where no component has a value are genuinely unknown, not
+            # "perfect agreement". Marked NaN so the gate below rejects them
+            # rather than waving them through with a disagreement of zero.
+            any_finite = np.isfinite(stack).any(axis=0)
+            disagreement = np.full(stack.shape[1], np.nan)
+            if any_finite.any():
+                sub = stack[:, any_finite]
+                disagreement[any_finite] = np.nanmax(sub, axis=0) - np.nanmin(sub, axis=0)
         else:
             disagreement = np.zeros(n)
 

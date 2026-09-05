@@ -20,6 +20,13 @@ then does the thing a human cannot: it checks itself. Every probability it
 reports has been measured against what actually happened the last time it said
 the same thing.
 
+**Before anything else, the headline result: over 13 backtested seasons this
+engine hit 76.9% on the selections it was willing to make, and still lost 1.0%
+per bet, because the bookmaker's margin is larger than its skill. It is a good
+predictor of what will happen and not a proven way to make money. The full
+numbers, including the evidence that settles it, are in
+[Validation](#validation--and-what-it-actually-found).**
+
 There is one thing it will not do, and it is worth being direct about it: it
 will not label anything a 100% guarantee. Not because of caution, but because
 the label would destroy the tool's usefulness. If everything is stamped
@@ -224,48 +231,116 @@ the bank — and always reports the honest number:
     5.0x   PARLAY      6              41.6%          +128.0%
 ```
 
-A 72.9% chance of doubling is a genuinely strong position. It is also a **27.1%
-chance of losing the stake**, and repeating it every week makes a losing run
-close to certain at some point. `staking.simulate_season()` will show you that
-distribution. Legs are always drawn from different fixtures — two selections on
+**That table is a shape illustration, not a forecast.** The "expected return"
+column is only positive if the leg probabilities are exactly right — and the
+[validation](#validation--and-what-it-actually-found) found the model runs about
+4.8 points optimistic on the selections it makes. Shave that off each leg and a
+three-leg parlay's expected return goes negative. Parlays magnify a calibration
+error: each leg multiplies it in.
+
+Read the **chance of hitting** column, treat the **expected return** column as
+an upper bound, and note that a 72.9% chance of doubling is also a **27.1%
+chance of losing the stake** — repeated weekly, a losing run becomes close to
+certain. `staking.simulate_season()` will show you that distribution. Legs are always drawn from different fixtures — two selections on
 the same match are correlated, and multiplying them as if they were independent
 is the fastest way to turn a 60% plan into a 40% one without noticing.
 
 ---
 
-## Validation
+## Validation — and what it actually found
+
+Backtested walk-forward over **13 seasons (2013/14 → 2026/27)**, 3.0 million
+out-of-sample predictions, settled at recreational-book pre-match prices.
+
+**Read this section before betting anything.** It is the most important part of
+the project, and the result is not the one the design was hoping for.
+
+### Hit rates by conviction tier
+
+| Tier | Bets | Claimed | **Actual** | Gap | Avg price | ROI |
+|---|---|---|---|---|---|---|
+| LOCK | 25 | 90.5% | **92.0%** | +1.5 | 1.13 | +4.4% |
+| STRONG | 811 | 83.9% | **79.5%** | −4.4 | 1.26 | +0.3% |
+| LEAN | 313 | 75.0% | **68.7%** | −6.3 | 1.39 | −4.6% |
+| **All** | **1,149** | **81.6%** | **76.9%** | **−4.8** | 1.29 | **−1.0%** |
+
+The LOCK row looks superb and means nothing: 25 bets is far too few to
+distinguish skill from luck.
+
+### The honest verdict
+
+**The engine picks winners well. It does not beat the price.**
+
+Two numbers frame it. Betting every home team blindly at these prices loses
+**−5.8%** over 93,552 matches — that is the bookmaker's margin doing its work.
+This system loses **−1.0%**. So the model has real skill: it recovers roughly
+five of the six points of margin. It just does not recover all of them, and
+*all of them* is the bar for profit.
+
+Across a sweep of every confidence and edge threshold, no setting produced a
+statistically significant edge. Every t-statistic landed between −1.3 and +1.5.
+The one positive cell (+8.1% ROI) had 21 bets in it.
+
+### The finding that settles it
+
+Raising the required edge makes the predictions **worse calibrated**, not
+better:
+
+| Required edge | Bets | Claimed | Actual | Gap | ROI |
+|---|---|---|---|---|---|
+| 2% | 1,145 | 81.6% | 76.9% | −4.7 | −0.9% |
+| 4% | 397 | 83.8% | 77.1% | −6.7 | −0.2% |
+| 6% | 178 | 84.9% | 74.2% | **−10.8** | −3.0% |
+| 10% | 31 | 86.6% | 74.2% | **−12.4** | −0.9% |
+
+This is the signature of an edge that is not there. If the model genuinely found
+mispriced bets, demanding a bigger discrepancy would isolate the *best* ones.
+Instead, the bigger the claimed edge, the more overconfident the model turns out
+to be — because the discrepancy is the model being wrong, not the market.
+
+So: **do not raise `min_edge` hoping to find better bets. It does the opposite.**
+
+### What the tool is therefore good for
+
+- **Ranking outcomes honestly.** A selection it calls 80% lands about 77% of the
+  time. That is genuinely useful for deciding what is likely.
+- **Knowing your real chance of doubling.** The staking ladder's numbers are
+  sound, and it will not tell you a parlay is safer than it is.
+- **Refusing to speak.** On a thin card it returns nothing, which is correct.
+
+### What it is not good for
+
+- **Finding value.** It has no demonstrated ability to beat Betway's prices, and
+  the evidence above suggests its apparent "value" is mostly its own error.
+- **A guaranteed income.** Over these 13 seasons it lost money slowly.
+
+### Protocol
 
 Backtesting football is easy to get wrong in ways that manufacture an edge. This
-protocol is deliberately strict:
+one is deliberately strict:
 
-- **Expanding window.** To predict season *S*, the model is fitted only on
-  matches played before season *S* began, and refitted from scratch each season.
+- **Expanding window.** To predict season *S*, fitted only on matches played
+  before season *S* began, refitted from scratch each season.
 - **Leak-free features.** Built in a single forward pass that emits a match's
-  features *before* folding in that match's result. There is a test
-  (`test_features_do_not_leak_the_result`) that changes the last match's score
-  and asserts no feature moves.
-- **Pre-match prices only.** Closing odds are never an input — you cannot bet at
-  a price that does not exist yet.
+  features *before* folding in that match's result.
+  `test_features_do_not_leak_the_result` changes the last match's score and
+  asserts no feature moves.
+- **Pre-match prices only.** Closing odds are never an input.
 - **Out-of-sample calibration.** Season *S* is calibrated using only seasons
-  before it. Fitting the calibrator on the season being scored is the subtlest
-  way to manufacture confidence that does not survive contact with reality.
-- **Settled at recreational prices.** Bets settle at a Bet365/average pre-match
-  price — the bracket Betway sits in — not at best-price-across-all-books.
+  before it.
+- **Recreational settlement prices.** Bet365/average pre-match — Betway's
+  bracket — not best-price-across-all-books.
 
-Run `python tests/test_matchpredictor.py` to check the invariants (19 tests, no
-pytest required).
+Reproduce with `python -m matchpredictor backtest --n-seasons 13`, and check the
+invariants with `python tests/test_matchpredictor.py` (19 tests, no pytest
+needed).
 
-### What the backtest cannot capture
+### What even this cannot capture
 
-**Betway will restrict or close an account that wins consistently.** This is the
-single biggest gap between a backtest and reality, and no model fixes it.
-
-Prices also move between when the feed captured them and when you would bet, the
-data feed carries no team-news or injury information, and the historical results
-above are a sample — a real edge of a few percent is indistinguishable from
-noise over a few hundred bets. **Treat every ROI figure as an upper bound.**
-
----
+**Betway restricts or closes accounts that win consistently.** No model fixes
+that. Prices also move between capture and bet, and the feed carries no team
+news or injury data. Every figure above is an upper bound — and the upper bound
+is already negative.
 
 ## Layout
 
