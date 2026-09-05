@@ -73,21 +73,36 @@ class FamilyCalibration:
     logloss_cal: float = float("nan")
 
     def transform(self, p: np.ndarray, p_mkt: np.ndarray | None = None) -> np.ndarray:
-        p = np.clip(np.asarray(p, dtype=float), 1e-6, 1 - 1e-6)
-        if self.n_train < 200:
-            return p
+        p_in = np.asarray(p, dtype=float)
+        scalar = p_in.ndim == 0
+        p_in = np.atleast_1d(p_in)
+
+        # Missing predictions must stay missing. np.clip leaves NaN as NaN, and
+        # a NaN reaching the stacker raises rather than returning something
+        # sensible - so finite rows are transformed and the rest pass straight
+        # through. Callers rely on NaN meaning "this market does not apply to
+        # this match", never "probability zero".
+        finite = np.isfinite(p_in)
+        out = np.full(p_in.shape, np.nan)
+        if not finite.any() or self.n_train < 200:
+            res = np.where(finite, np.clip(p_in, 1e-6, 1 - 1e-6), np.nan)
+            return float(res[0]) if scalar else res
+
+        q = np.clip(p_in[finite], 1e-6, 1 - 1e-6)
 
         if self.stacker is not None and p_mkt is not None:
-            pm = np.asarray(p_mkt, dtype=float)
+            pm = np.atleast_1d(np.asarray(p_mkt, dtype=float))[finite]
             # Where no market price exists, fall back to the model's own number
             # so the stacker sees a consistent pair rather than a hole.
-            pm = np.where(np.isfinite(pm), pm, p)
-            X = np.column_stack([_logit(p), _logit(pm)])
-            p = np.clip(self.stacker.predict_proba(X)[:, 1], 1e-6, 1 - 1e-6)
+            pm = np.clip(np.where(np.isfinite(pm), pm, q), 1e-6, 1 - 1e-6)
+            X = np.column_stack([_logit(q), _logit(pm)])
+            q = np.clip(self.stacker.predict_proba(X)[:, 1], 1e-6, 1 - 1e-6)
 
-        if self.iso is None:
-            return np.clip(p, 1e-4, 1 - 1e-4)
-        return np.clip(self.iso.predict(p), 1e-4, 1 - 1e-4)
+        if self.iso is not None:
+            q = self.iso.predict(q)
+
+        out[finite] = np.clip(q, 1e-4, 1 - 1e-4)
+        return float(out[0]) if scalar else out
 
     def evidence(self, p: float) -> tuple[int, float]:
         """(sample count, empirical hit rate) for the band this probability falls in."""
