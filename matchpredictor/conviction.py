@@ -223,3 +223,129 @@ def dedupe_one_per_match(picks: list[Pick]) -> list[Pick]:
     out = list(best.values())
     out.sort(key=lambda x: (rank[x.tier], -x.prob, -x.ev))
     return out
+
+
+@dataclass
+class Watch:
+    """A selection the model is confident in, but has no real price for.
+
+    Most of the 62 markets the engine prices are not quoted in the free data
+    feed. Inventing a price for them would be worse than useless: a fabricated
+    price produces a fabricated edge, and the edge gate would either reject
+    everything or wave through nonsense.
+
+    So they come out here instead, with the one number that actually helps -
+    the minimum price at which the bet becomes worth making. Look the selection
+    up on Betway; if their price is at or above `min_price`, it clears the same
+    edge bar every fully-gated pick had to clear.
+    """
+
+    match_id: str
+    date: str
+    div: str
+    home: str
+    away: str
+    market: str
+    selection: str
+    prob: float
+    fair_price: float
+    min_price: float          # the lowest Betway price worth taking
+    tier: str
+    disagreement: float
+    bin_n: int
+    bin_rate: float
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    def describe(self) -> str:
+        return (f"[{self.tier}] {self.home} v {self.away} ({self.div})\n"
+                f"    {self.selection}\n"
+                f"    model {self.prob*100:.1f}%   fair {self.fair_price:.2f}   "
+                f"TAKE ONLY AT {self.min_price:.2f} OR BETTER\n"
+                f"    track record in this band: {self.bin_rate*100:.1f}% over "
+                f"{self.bin_n:,} past bets")
+
+
+def build_watchlist(rows: pd.DataFrame,
+                    probs_raw: dict[str, np.ndarray],
+                    component_probs: dict[str, dict[str, np.ndarray]],
+                    calibrators: CalibratorSet,
+                    cfg: ConvictionConfig = DEFAULT_CONVICTION_CONFIG,
+                    *,
+                    market_probs: dict[str, np.ndarray] | None = None,
+                    skip_keys: set[str] | None = None,
+                    market_keys: list[str] | None = None) -> list[Watch]:
+    """Apply every gate except the price-dependent ones, and report a target price.
+
+    Same confidence, evidence and agreement standards as `select_picks`. The
+    only difference is that the edge test is deferred to you, expressed as the
+    minimum price that would satisfy it.
+    """
+    keys = market_keys if market_keys is not None else list(probs_raw)
+    skip = skip_keys or set()
+    n = len(rows)
+    if n == 0:
+        return []
+
+    meta_id = rows["match_id"].to_numpy()
+    meta_date = pd.to_datetime(rows["date"]).dt.strftime("%Y-%m-%d").to_numpy()
+    meta_div = rows["div"].astype(str).to_numpy()
+    meta_home = rows["home"].astype(str).to_numpy()
+    meta_away = rows["away"].astype(str).to_numpy()
+    season_mp_h = rows["season_mp_h"].to_numpy(float) if "season_mp_h" in rows else np.full(n, 99.0)
+    season_mp_a = rows["season_mp_a"].to_numpy(float) if "season_mp_a" in rows else np.full(n, 99.0)
+
+    out: list[Watch] = []
+    for key in keys:
+        if key in skip or key not in probs_raw:
+            continue
+        fam = market_family(key)
+        p_mkt = None
+        if market_probs and key in market_probs:
+            p_mkt = np.asarray(market_probs[key], dtype=float)
+        elif "market" in component_probs and key in component_probs["market"]:
+            p_mkt = np.asarray(component_probs["market"][key], dtype=float)
+        p_cal = calibrators.transform(fam, np.asarray(probs_raw[key], dtype=float), p_mkt)
+
+        comps = [np.asarray(c[key], dtype=float) for c in component_probs.values() if key in c]
+        disagreement = (np.vstack(comps).max(axis=0) - np.vstack(comps).min(axis=0)
+                        if len(comps) >= 2 else np.zeros(n))
+
+        floor = min(cfg.tiers.values())
+        ok = (np.isfinite(p_cal) & (p_cal >= floor)
+              & np.isfinite(disagreement) & (disagreement <= cfg.max_component_disagreement)
+              & (season_mp_h >= cfg.min_matches_played)
+              & (season_mp_a >= cfg.min_matches_played))
+
+        for i in np.flatnonzero(ok):
+            p = float(p_cal[i])
+            tier = _tier_for(p, cfg)
+            if tier is None:
+                continue
+            bin_n, bin_rate = calibrators.evidence(fam, p)
+            if bin_n < cfg.min_bin_samples:
+                continue
+            if not np.isfinite(bin_rate) or bin_rate < p - cfg.bin_hitrate_tolerance:
+                continue
+
+            edge_req = cfg.min_edge_lock if p >= cfg.tiers["LOCK"] else cfg.min_edge
+            denom = p - edge_req
+            if denom <= 0:
+                continue
+            min_price = 1.0 / denom
+            if min_price > cfg.max_odds:
+                continue
+
+            out.append(Watch(
+                match_id=str(meta_id[i]), date=str(meta_date[i]), div=str(meta_div[i]),
+                home=str(meta_home[i]), away=str(meta_away[i]), market=key,
+                selection=label_for(key, str(meta_home[i]), str(meta_away[i])),
+                prob=p, fair_price=1.0 / max(p, 1e-9), min_price=min_price,
+                tier=tier, disagreement=float(disagreement[i]),
+                bin_n=int(bin_n), bin_rate=float(bin_rate),
+            ))
+
+    rank = {"LOCK": 0, "STRONG": 1, "LEAN": 2}
+    out.sort(key=lambda w: (rank[w.tier], -w.prob))
+    return out

@@ -144,11 +144,34 @@ python -m matchpredictor calibration
 python -m matchpredictor backtest --n-seasons 10
 ```
 
+### Picks vs. the watchlist
+
+The output has two sections, and the split matters.
+
+**Picks** cleared every gate *including* the edge test, because a real quoted
+price existed. These come with a staking plan.
+
+**Watchlist** entries cleared every gate *except* price — the free data feed
+only quotes match result and over/under 2.5, so for the other ~57 markets there
+is no price to test against. Rather than invent one (a fabricated price gives a
+fabricated edge, which is worse than no answer), each entry reports the number
+you actually need:
+
+```
+[LOCK] Bayern Munich v Heidenheim (D1)
+    Bayern Munich or Draw (Double Chance)
+    model 94.2%   fair 1.06   TAKE ONLY AT 1.08 OR BETTER
+    track record in this band: 94.6% over 1,240 past bets
+```
+
+Look it up on Betway. At or above `min_price`, it clears the same edge bar every
+pick had to clear. Below it, walk away — being right at a bad price is still a
+losing strategy.
+
 ### Feeding it your real Betway prices
 
-Without your actual numbers, any market the data feed does not quote is priced
-from an *estimate*, and its edge should not be trusted. Those picks are flagged
-`price_is_estimate`. To use real prices:
+Entering real prices promotes watchlist entries into fully-gated picks and lets
+them into the staking plan:
 
 ```json
 {
@@ -173,7 +196,7 @@ python match_server.py     # 0.0.0.0:10001
 | `GET /health` | model status, history size, upcoming count |
 | `GET /fixtures?days=2` | fixtures the engine can see |
 | `GET /markets/<match_id>` | all 62 markets priced for one fixture + likeliest scorelines |
-| `GET /slip?days=2&target=2.0` | conviction picks + staking plan |
+| `GET /slip?days=2&target=2.0` | conviction picks + watchlist + staking plan |
 | `POST /slip` | same, with your real Betway prices in the body |
 | `GET /calibration` | reliability tables |
 

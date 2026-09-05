@@ -117,24 +117,39 @@ def cmd_slip(args) -> int:
     if args.real_prices_only:
         cfg.require_market_price = True
 
-    picks, priced = pipeline.todays_picks(model, cal, fixtures, betway, cfg)
-    if args.real_prices_only:
-        picks = [p for p in picks if not p.price_is_estimate]
+    picks, priced, watch = pipeline.todays_picks(model, cal, fixtures, betway, cfg)
 
     print(f"{len(fixtures)} fixtures scanned over the next {args.days} day(s).")
-    print(f"{len(picks)} selection(s) cleared every conviction gate.\n")
-
-    if not picks:
-        print("Nothing qualifies. That is a result, not a failure - the gates are")
-        print("there precisely so that a thin card produces silence rather than")
-        print("a manufactured opinion.")
-        return 0
+    print(f"{len(picks)} selection(s) cleared every conviction gate "
+          f"at a real quoted price.")
+    if watch and not args.real_prices_only:
+        print(f"{len(watch)} more cleared every gate except price "
+              f"(no quote in the free feed - check these on Betway).")
+    print()
 
     for p in picks:
-        print(p.describe())
-        if p.price_is_estimate:
-            print("    NOTE: price is estimated. Enter the real Betway price before betting.")
-        print()
+        print(p.describe()); print()
+
+    if watch and not args.real_prices_only:
+        _hr("WATCHLIST - confident, but you must check the Betway price")
+        print("These passed the confidence, evidence and agreement gates. The only")
+        print("thing not verified is the price, because the free feed does not quote")
+        print("these markets. Look each one up: if Betway's price is at or above")
+        print("the stated minimum, it clears the same edge bar as the picks above.\n")
+        for w in watch[:args.max_watch]:
+            print(w.describe()); print()
+        if len(watch) > args.max_watch:
+            print(f"    ... and {len(watch)-args.max_watch} more "
+                  f"(raise --max-watch to see them)\n")
+
+    if not picks:
+        print("No fully-priced selection qualifies today. That is a result, not a")
+        print("failure - the gates exist so that a thin card produces silence")
+        print("rather than a manufactured opinion.")
+        if watch:
+            print("Enter real Betway prices with --prices to turn watchlist entries")
+            print("into gated picks with a staking plan.")
+        return 0
 
     _hr(f"STAKING PLAN - target {args.target:.2f}x")
     plan = build_plan(picks, target=args.target, max_legs=args.max_legs)
@@ -192,7 +207,9 @@ def main(argv=None) -> int:
     p.add_argument("--prices", default=None,
                    help="JSON file: {match_id: {market_key: betway_decimal_odds}}")
     p.add_argument("--real-prices-only", action="store_true",
-                   help="drop selections whose price is only an estimate")
+                   help="hide the watchlist; show only fully-priced picks")
+    p.add_argument("--max-watch", type=int, default=15,
+                   help="how many watchlist entries to print")
     p.set_defaults(func=cmd_slip)
 
     args = ap.parse_args(argv)

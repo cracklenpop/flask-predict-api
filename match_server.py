@@ -127,16 +127,16 @@ def _slip_payload(days: int, target: float, bankroll: float, max_legs: int,
     if league:
         up = up[up["div"].isin(league.split(","))]
     if len(up) == 0:
-        return {"fixtures_scanned": 0, "picks": [], "plan": None,
+        return {"fixtures_scanned": 0, "picks": [], "watchlist": [], "plan": None,
                 "message": "No upcoming fixtures in this window."}
 
     cfg = ConvictionConfig()
     if min_prob is not None:
         cfg.tiers = {k: max(v, min_prob) for k, v in cfg.tiers.items()}
 
-    picks, _ = pipeline.todays_picks(model, cal, up, betway, cfg)
+    picks, _, watch = pipeline.todays_picks(model, cal, up, betway, cfg)
     if real_only:
-        picks = [p for p in picks if not p.price_is_estimate]
+        watch = []
 
     plan = build_plan(picks, target=target, max_legs=max_legs) if picks else None
     lad = ladder(picks, max_legs=max_legs) if picks else []
@@ -144,6 +144,7 @@ def _slip_payload(days: int, target: float, bankroll: float, max_legs: int,
     return {
         "fixtures_scanned": len(up),
         "picks": [p.to_dict() for p in picks],
+        "watchlist": [w.to_dict() for w in watch],
         "plan": None if plan is None else {
             "kind": plan.kind,
             "target": plan.target,

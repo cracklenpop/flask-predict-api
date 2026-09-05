@@ -162,6 +162,12 @@ def label_for(key: str, home: str, away: str) -> str:
 # curve enough samples to be trustworthy without blurring genuinely different
 # prediction problems together.
 def market_family(key: str) -> str:
+    # Combination markets are tested first. They contain the substrings "OVER_"
+    # and "UNDER_" but are a different prediction problem from a team total, and
+    # routing them to the wrong calibration curve would have them corrected by
+    # evidence drawn from unrelated bets.
+    if "_AND_" in key:
+        return "combo"
     if key.startswith("1X2_"):
         return "result"
     if key.startswith("DC_") or key.startswith("DNB_"):
@@ -170,12 +176,12 @@ def market_family(key: str) -> str:
         return "totals"
     if key.startswith("BTTS_"):
         return "btts"
+    if "CLEAN_SHEET" in key or "WIN_TO_NIL" in key:
+        return "clean_sheet"
     if "OVER_" in key or "UNDER_" in key:
         return "team_totals"
     if key.startswith("HCP_"):
         return "handicap"
-    if "CLEAN_SHEET" in key or "WIN_TO_NIL" in key:
-        return "clean_sheet"
     return "combo"
 
 

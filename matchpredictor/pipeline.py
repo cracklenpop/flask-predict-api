@@ -21,7 +21,8 @@ from . import data as datamod
 from .calibration import CalibratorSet
 from .config import (CACHE_DIR, DEFAULT_CONVICTION_CONFIG, DEFAULT_LEAGUES,
                      DEFAULT_MODEL_CONFIG, ConvictionConfig, ModelConfig)
-from .conviction import Pick, dedupe_one_per_match, select_picks
+from .conviction import (Pick, Watch, build_watchlist, dedupe_one_per_match,
+                          select_picks)
 from .features import build_features
 from .markets import ALL_MARKET_KEYS, derive_all, market_family
 from .model import MatchPredictor
@@ -193,7 +194,8 @@ def todays_picks(model: MatchPredictor, cal: CalibratorSet,
                  betway_prices: dict[str, dict[str, float]] | None = None,
                  cfg: ConvictionConfig = DEFAULT_CONVICTION_CONFIG,
                  *, one_per_match: bool = True,
-                 typical_margin: float = 0.06) -> tuple[list[Pick], pd.DataFrame]:
+                 typical_margin: float = 0.06
+                 ) -> tuple[list[Pick], pd.DataFrame, list[Watch]]:
     """Produce the conviction picks for a set of fixtures.
 
     `betway_prices` maps match_id -> {market_key: decimal odds}. Anything you
@@ -203,7 +205,7 @@ def todays_picks(model: MatchPredictor, cal: CalibratorSet,
     """
     priced = price_fixtures(fixtures, model, cal)
     if len(priced) == 0:
-        return [], priced
+        return [], priced, []
 
     n = len(fixtures)
     index = {m: i for i, m in enumerate(fixtures["match_id"].to_numpy())}
@@ -222,10 +224,12 @@ def todays_picks(model: MatchPredictor, cal: CalibratorSet,
             prices[key] = ref[key].copy()
             price_est[key] = False
         else:
-            # Estimated: fair price marked up by a typical book margin.
-            p = np.clip(cal.transform(market_family(key), probs[key], comp["market"][key]),
-                        1e-4, 1 - 1e-4)
-            prices[key] = (1.0 / p) * (1.0 - typical_margin)
+            # No real quote exists for this market. Deliberately left as NaN
+            # rather than filled with a guess: a fabricated price yields a
+            # fabricated edge, and the edge gate is the one thing standing
+            # between "confident" and "profitable". These selections surface on
+            # the watchlist instead, with a minimum price to look for.
+            prices[key] = np.full(n, np.nan)
             price_est[key] = True
 
     # Overlay any real Betway prices the user has entered.
@@ -240,13 +244,23 @@ def todays_picks(model: MatchPredictor, cal: CalibratorSet,
 
     rows = fixtures[["match_id", "date", "div", "home", "away",
                      "season_mp_h", "season_mp_a"]].reset_index(drop=True)
+    keys = [k for k in ALL_MARKET_KEYS if k in probs]
     picks = select_picks(rows, probs, comp, prices, cal, cfg,
                          market_probs=comp["market"],
                          price_is_estimate=price_est,
-                         market_keys=[k for k in ALL_MARKET_KEYS if k in probs])
+                         market_keys=keys)
     if one_per_match:
         picks = dedupe_one_per_match(picks)
-    return picks, priced
+
+    # Everything the model is confident about but cannot price: reported with
+    # the minimum Betway price that would make it a bet.
+    priced_keys = {k for k in keys if np.isfinite(prices[k]).any()}
+    watch = build_watchlist(rows, probs, comp, cal, cfg,
+                            market_probs=comp["market"],
+                            skip_keys=priced_keys, market_keys=keys)
+    seen = {p.match_id for p in picks}
+    watch = [w for w in watch if w.match_id not in seen] if one_per_match else watch
+    return picks, priced, watch
 
 
 def upcoming(feat: pd.DataFrame, days: int = 3) -> pd.DataFrame:

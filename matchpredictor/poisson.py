@@ -189,11 +189,15 @@ def invert_market_lambdas(p_h: np.ndarray, p_a: np.ndarray,
 
 def estimate_rho(hg: np.ndarray, ag: np.ndarray, lam_h: np.ndarray, lam_a: np.ndarray,
                  max_goals: int = DEFAULT_MAX_GOALS,
-                 grid_pts: int = 41) -> float:
+                 grid_pts: int = 41, max_sample: int = 30000,
+                 seed: int = 0) -> float:
     """Pick the Dixon-Coles rho that best explains observed low scores.
 
     A simple 1-D likelihood scan; rho is a single global nuisance parameter so
-    there is no need for anything fancier.
+    there is no need for anything fancier. The scan is capped at a random
+    subsample because each candidate value costs a full score grid over every
+    match - at 100k matches that is 41 grids of 100k x 121, minutes of work to
+    pin down one scalar that 30k matches already determines to three decimals.
     """
     ok = np.isfinite(hg) & np.isfinite(ag) & np.isfinite(lam_h) & np.isfinite(lam_a)
     if ok.sum() < 200:
@@ -201,6 +205,10 @@ def estimate_rho(hg: np.ndarray, ag: np.ndarray, lam_h: np.ndarray, lam_a: np.nd
     hg_i = np.clip(hg[ok].astype(int), 0, max_goals)
     ag_i = np.clip(ag[ok].astype(int), 0, max_goals)
     lh, la = lam_h[ok], lam_a[ok]
+
+    if hg_i.shape[0] > max_sample:
+        sel = np.random.default_rng(seed).choice(hg_i.shape[0], max_sample, replace=False)
+        hg_i, ag_i, lh, la = hg_i[sel], ag_i[sel], lh[sel], la[sel]
 
     best_rho, best_ll = -0.05, -np.inf
     for rho in np.linspace(-0.25, 0.15, grid_pts):
