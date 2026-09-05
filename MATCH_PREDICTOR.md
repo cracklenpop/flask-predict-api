@@ -147,8 +147,11 @@ python -m matchpredictor slip --days 2 --target 2.0 --bankroll 1000 --currency R
 # See the receipts behind every claim
 python -m matchpredictor calibration
 
+# Generate a price sheet to fill in from Betway
+python -m matchpredictor prices --days 3 --out betway_prices.json
+
 # Re-run the validation yourself
-python -m matchpredictor backtest --n-seasons 10
+python -m matchpredictor backtest --n-seasons 13
 ```
 
 ### Picks vs. the watchlist
@@ -178,7 +181,35 @@ losing strategy.
 ### Feeding it your real Betway prices
 
 Entering real prices promotes watchlist entries into fully-gated picks and lets
-them into the staking plan:
+them into the staking plan. Do not build the file by hand — generate it:
+
+```bash
+python -m matchpredictor prices --days 3 --out betway_prices.json
+```
+
+That writes one entry per selection with the match id and market key already
+correct, and the price left blank:
+
+```json
+"E1|2627|20260905|West Brom|Watford": {
+  "_match": "West Brom v Watford (E1) 2026-09-05",
+  "_selection_HCP_HOME_+1.5": "West Brom +1.5 handicap  -- need 1.11 or better",
+  "HCP_HOME_+1.5": null
+}
+```
+
+Look each one up on Betway, replace `null` with their decimal price, delete
+anything you do not want, then:
+
+```bash
+python -m matchpredictor slip --prices betway_prices.json --real-prices-only
+```
+
+Prices left as `null` are ignored, and anything below the stated minimum is
+rejected by the edge gate rather than quietly accepted. Keys beginning with `_`
+are notes for you and are skipped.
+
+The manual format, if you prefer it:
 
 ```json
 {

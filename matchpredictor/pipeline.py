@@ -235,12 +235,22 @@ def todays_picks(model: MatchPredictor, cal: CalibratorSet,
     # Overlay any real Betway prices the user has entered.
     if betway_prices:
         for mid, mk in betway_prices.items():
+            # Keys beginning with "_" are human-readable scaffolding written by
+            # the `prices` template command, not fixtures.
+            if mid.startswith("_") or not isinstance(mk, dict):
+                continue
             i = index.get(mid)
             if i is None:
                 continue
             for key, odds in mk.items():
-                if key in prices and odds and odds > 1.01:
-                    prices[key][i] = float(odds)
+                if key.startswith("_") or key not in prices:
+                    continue
+                try:
+                    val = float(odds)
+                except (TypeError, ValueError):
+                    continue  # left blank in the template, or mistyped
+                if val > 1.01:
+                    prices[key][i] = val
 
     rows = fixtures[["match_id", "date", "div", "home", "away",
                      "season_mp_h", "season_mp_a"]].reset_index(drop=True)

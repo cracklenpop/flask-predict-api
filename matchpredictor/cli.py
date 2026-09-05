@@ -216,6 +216,58 @@ def cmd_slip(args) -> int:
     return 0
 
 
+def cmd_prices(args) -> int:
+    """Write a JSON skeleton of today's selections for you to fill in.
+
+    Constructing the price file by hand means typing match ids like
+    "E1|2627|20260912|West Brom|Watford" exactly right, which is a miserable
+    and error-prone job. This writes them for you, one entry per selection,
+    with the market key already in place and the price left blank.
+    """
+    _hr("PRICE TEMPLATE")
+    model, cal, meta = pipeline.load_artifacts()
+    feat = pipeline.load_features()
+    fixtures = pipeline.upcoming(feat, days=args.days)
+    if args.league:
+        fixtures = fixtures[fixtures["div"].isin(args.league.split(","))]
+    if len(fixtures) == 0:
+        print("No upcoming fixtures. Run `update` first.")
+        return 1
+
+    cfg = ConvictionConfig()
+    if args.min_prob is not None:
+        cfg.tiers = {k: max(v, args.min_prob) for k, v in cfg.tiers.items()}
+
+    picks, _, watch = pipeline.todays_picks(model, cal, fixtures, None, cfg)
+
+    out: dict = {"_instructions": (
+        "Fill in the decimal price Betway is showing for each selection, "
+        "replacing null. Delete any entry you do not want to bet. Leave a "
+        "price as null and that selection is ignored. Then run: "
+        "python -m matchpredictor slip --prices <this file>")}
+
+    entries = [(p.match_id, p.market, p.selection, p.home, p.away, p.div, p.date,
+                p.prob, 1.0 / max(p.prob - cfg.min_edge, 1e-6)) for p in picks]
+    entries += [(w.match_id, w.market, w.selection, w.home, w.away, w.div, w.date,
+                 w.prob, w.min_price) for w in watch]
+
+    for mid, market, sel, home, away, div, date, prob, minp in entries[:args.limit]:
+        out.setdefault(mid, {
+            "_match": f"{home} v {away} ({div}) {date}",
+        })
+        out[mid]["_selection_" + market] = f"{sel}  -- need {minp:.2f} or better"
+        out[mid][market] = None
+
+    with open(args.out, "w") as fh:
+        json.dump(out, fh, indent=2)
+
+    n_sel = sum(1 for k, v in out.items() if not k.startswith("_"))
+    print(f"Wrote {args.out} with {n_sel} fixture(s).")
+    print("\nOpen it, put Betway's decimal price next to each market key, then:")
+    print(f"    python -m matchpredictor slip --prices {args.out} --real-prices-only")
+    return 0
+
+
 # --------------------------------------------------------------------------
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="matchpredictor",
@@ -259,6 +311,14 @@ def main(argv=None) -> int:
     p.add_argument("--max-watch", type=int, default=15,
                    help="how many watchlist entries to print")
     p.set_defaults(func=cmd_slip)
+
+    p = sub.add_parser("prices", help="write a JSON price template to fill in")
+    p.add_argument("--days", type=int, default=2)
+    p.add_argument("--league", default=None)
+    p.add_argument("--min-prob", type=float, default=None)
+    p.add_argument("--limit", type=int, default=40)
+    p.add_argument("--out", default="betway_prices.json")
+    p.set_defaults(func=cmd_prices)
 
     args = ap.parse_args(argv)
     return args.func(args)
