@@ -61,13 +61,15 @@ class Pick:
     bin_rate: float          # what actually happened in that band
     kelly: float             # full-Kelly bankroll fraction
     price_is_estimate: bool  # True when no real book price was supplied
+    kickoff: str = ""        # local kickoff time, so a started match is obvious
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     def describe(self) -> str:
         ev_pct = self.ev * 100
-        return (f"[{self.tier}] {self.home} v {self.away} ({self.div})\n"
+        when = f"  kick-off {self.kickoff}" if self.kickoff else ""
+        return (f"[{self.tier}] {self.home} v {self.away} ({self.div}){when}\n"
                 f"    {self.selection}\n"
                 f"    model {fmt_prob(self.prob)}   price {self.price:.2f} "
                 f"(fair {self.fair_price:.2f})   edge {self.edge*100:+.1f}pts   EV {ev_pct:+.1f}%\n"
@@ -84,6 +86,15 @@ def fmt_prob(p: float) -> str:
     claim otherwise however close the number gets.
     """
     return f"{min(p, 0.999) * 100:.1f}%" if p < 0.9995 else ">99.9%"
+
+
+def _kickoff_labels(rows: pd.DataFrame) -> np.ndarray:
+    """Human-readable local kickoff times, blank when the column is absent."""
+    for col in ("kickoff_local", "kickoff"):
+        if col in rows:
+            k = pd.to_datetime(rows[col], errors="coerce")
+            return k.dt.strftime("%a %d %b %H:%M").fillna("").to_numpy()
+    return np.full(len(rows), "")
 
 
 def kelly_fraction(p: float, price: float) -> float:
@@ -131,6 +142,7 @@ def select_picks(rows: pd.DataFrame,
     meta_away = rows["away"].astype(str).to_numpy()
     season_mp_h = rows["season_mp_h"].to_numpy(float) if "season_mp_h" in rows else np.full(n, 99.0)
     season_mp_a = rows["season_mp_a"].to_numpy(float) if "season_mp_a" in rows else np.full(n, 99.0)
+    kicks = _kickoff_labels(rows)
 
     picks: list[Pick] = []
 
@@ -216,7 +228,7 @@ def select_picks(rows: pd.DataFrame,
                 edge=float(edge[i]), ev=float(ev[i]), tier=tier,
                 disagreement=float(disagreement[i]),
                 bin_n=int(bin_n), bin_rate=float(bin_rate),
-                kelly=float(k), price_is_estimate=est,
+                kelly=float(k), price_is_estimate=est, kickoff=str(kicks[i]),
             ))
 
     tier_rank = {"LOCK": 0, "STRONG": 1, "LEAN": 2}
@@ -272,12 +284,14 @@ class Watch:
     disagreement: float
     bin_n: int
     bin_rate: float
+    kickoff: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     def describe(self) -> str:
-        return (f"[{self.tier}] {self.home} v {self.away} ({self.div})\n"
+        when = f"  kick-off {self.kickoff}" if self.kickoff else ""
+        return (f"[{self.tier}] {self.home} v {self.away} ({self.div}){when}\n"
                 f"    {self.selection}\n"
                 f"    model {fmt_prob(self.prob)}   fair {self.fair_price:.2f}   "
                 f"TAKE ONLY AT {self.min_price:.2f} OR BETTER\n"
@@ -313,6 +327,7 @@ def build_watchlist(rows: pd.DataFrame,
     meta_away = rows["away"].astype(str).to_numpy()
     season_mp_h = rows["season_mp_h"].to_numpy(float) if "season_mp_h" in rows else np.full(n, 99.0)
     season_mp_a = rows["season_mp_a"].to_numpy(float) if "season_mp_a" in rows else np.full(n, 99.0)
+    kicks = _kickoff_labels(rows)
 
     out: list[Watch] = []
     for key in keys:
@@ -369,7 +384,7 @@ def build_watchlist(rows: pd.DataFrame,
                 selection=label_for(key, str(meta_home[i]), str(meta_away[i])),
                 prob=p, fair_price=1.0 / max(p, 1e-9), min_price=min_price,
                 tier=tier, disagreement=float(disagreement[i]),
-                bin_n=int(bin_n), bin_rate=float(bin_rate),
+                bin_n=int(bin_n), bin_rate=float(bin_rate), kickoff=str(kicks[i]),
             ))
 
     rank = {"LOCK": 0, "STRONG": 1, "LEAN": 2}

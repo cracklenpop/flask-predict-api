@@ -99,7 +99,8 @@ def cmd_slip(args) -> int:
     _hr("CONVICTION SLIP")
     model, cal, meta = pipeline.load_artifacts()
     feat = pipeline.load_features()
-    fixtures = pipeline.upcoming(feat, days=args.days)
+    fixtures = pipeline.upcoming(feat, days=args.days,
+                                 min_lead_minutes=args.min_lead)
     if args.league:
         fixtures = fixtures[fixtures["div"].isin(args.league.split(","))]
     if len(fixtures) == 0:
@@ -119,7 +120,11 @@ def cmd_slip(args) -> int:
 
     picks, priced, watch = pipeline.todays_picks(model, cal, fixtures, betway, cfg)
 
-    print(f"{len(fixtures)} fixtures scanned over the next {args.days} day(s).")
+    nxt = fixtures["kickoff_local"].min() if "kickoff_local" in fixtures and len(fixtures) else None
+    print(f"{len(fixtures)} fixtures that have NOT kicked off yet, "
+          f"over the next {args.days} day(s).")
+    if nxt is not None:
+        print(f"Earliest kick-off: {nxt.strftime('%a %d %b %H:%M %Z')} (your local time).")
     print(f"{len(picks)} selection(s) cleared every conviction gate "
           f"at a real quoted price.")
     if watch and not args.real_prices_only:
@@ -227,7 +232,8 @@ def cmd_prices(args) -> int:
     _hr("PRICE TEMPLATE")
     model, cal, meta = pipeline.load_artifacts()
     feat = pipeline.load_features()
-    fixtures = pipeline.upcoming(feat, days=args.days)
+    fixtures = pipeline.upcoming(feat, days=args.days,
+                                 min_lead_minutes=args.min_lead)
     if args.league:
         fixtures = fixtures[fixtures["div"].isin(args.league.split(","))]
     if len(fixtures) == 0:
@@ -298,6 +304,8 @@ def main(argv=None) -> int:
 
     p = sub.add_parser("slip", help="today's conviction picks and staking plan")
     p.add_argument("--days", type=int, default=2)
+    p.add_argument("--min-lead", type=int, default=10,
+                   help="skip fixtures kicking off within this many minutes")
     p.add_argument("--league", default=None)
     p.add_argument("--target", type=float, default=2.0)
     p.add_argument("--bankroll", type=float, default=1000.0)
@@ -314,6 +322,8 @@ def main(argv=None) -> int:
 
     p = sub.add_parser("prices", help="write a JSON price template to fill in")
     p.add_argument("--days", type=int, default=2)
+    p.add_argument("--min-lead", type=int, default=10,
+                   help="skip fixtures kicking off within this many minutes")
     p.add_argument("--league", default=None)
     p.add_argument("--min-prob", type=float, default=None)
     p.add_argument("--limit", type=int, default=40)

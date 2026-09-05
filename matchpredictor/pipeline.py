@@ -9,6 +9,7 @@ refers to this code, not to an idealised cousin of it.
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import pickle
@@ -252,8 +253,13 @@ def todays_picks(model: MatchPredictor, cal: CalibratorSet,
                 if val > 1.01:
                     prices[key][i] = val
 
-    rows = fixtures[["match_id", "date", "div", "home", "away",
-                     "season_mp_h", "season_mp_a"]].reset_index(drop=True)
+    row_cols = ["match_id", "date", "div", "home", "away",
+                "season_mp_h", "season_mp_a"]
+    if "kickoff_local" in fixtures.columns:
+        row_cols.append("kickoff_local")
+    elif "kickoff" in fixtures.columns:
+        row_cols.append("kickoff")
+    rows = fixtures[row_cols].reset_index(drop=True)
     keys = [k for k in ALL_MARKET_KEYS if k in probs]
     picks = select_picks(rows, probs, comp, prices, cal, cfg,
                          market_probs=comp["market"],
@@ -275,9 +281,51 @@ def todays_picks(model: MatchPredictor, cal: CalibratorSet,
     return picks, priced, watch
 
 
-def upcoming(feat: pd.DataFrame, days: int = 3) -> pd.DataFrame:
-    """Fixtures kicking off within the next `days` days."""
-    now = pd.Timestamp.now().normalize()
+# football-data.co.uk publishes kickoff times in UK local time (GMT in winter,
+# BST in summer). The machine running this may be in any timezone, so the two
+# must be reconciled explicitly rather than compared as naive timestamps.
+FEED_TIMEZONE = "Europe/London"
+
+
+def kickoff_utc(df: pd.DataFrame) -> pd.Series:
+    """Kickoff times as timezone-aware UTC."""
+    k = pd.to_datetime(df["kickoff"])
+    if getattr(k.dt, "tz", None) is not None:
+        return k.dt.tz_convert("UTC")
+    return (k.dt.tz_localize(FEED_TIMEZONE, ambiguous="NaT", nonexistent="shift_forward")
+             .dt.tz_convert("UTC"))
+
+
+def upcoming(feat: pd.DataFrame, days: int = 3,
+             min_lead_minutes: int = 10) -> pd.DataFrame:
+    """Fixtures that have not kicked off yet and start within `days` days.
+
+    Two things this has to get right, both of which are easy to get wrong and
+    silently produce a card full of matches you cannot bet on:
+
+    1. TIME OF DAY, not date. Filtering from midnight leaves a match that
+       kicked off at 15:00 still showing as "upcoming" at 19:00. The comparison
+       is against the current instant.
+    2. TIMEZONE. The feed's kickoff times are UK local; the machine may not be.
+       For a user two hours ahead, a naive comparison wrongly keeps matches that
+       started two hours ago and drops ones about to start.
+
+    `min_lead_minutes` additionally drops anything kicking off within the next
+    few minutes - by the time you have looked up a price and placed the bet, the
+    match has started.
+    """
     up = feat[(feat["played"] == False)].copy()  # noqa: E712
-    up = up[(up["kickoff"] >= now) & (up["kickoff"] <= now + pd.Timedelta(days=days))]
-    return up.sort_values("kickoff").reset_index(drop=True)
+    if len(up) == 0:
+        return up.reset_index(drop=True)
+
+    now = pd.Timestamp.now(tz="UTC")
+    ku = kickoff_utc(up)
+    keep = (ku >= now + pd.Timedelta(minutes=min_lead_minutes)) & \
+           (ku <= now + pd.Timedelta(days=days)) & ku.notna()
+
+    up = up[keep].copy()
+    up["kickoff_utc"] = ku[keep]
+    # A local-time label so the printed card matches the user's own clock.
+    local_tz = datetime.datetime.now().astimezone().tzinfo
+    up["kickoff_local"] = up["kickoff_utc"].dt.tz_convert(local_tz)
+    return up.sort_values("kickoff_utc").reset_index(drop=True)
