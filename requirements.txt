@@ -1,5 +1,12 @@
+# --- match predictor ---
 flask
 numpy
 pandas
+scipy
+scikit-learn
+requests
+pyarrow
+
+# --- existing PPO scalper (server.py) ---
 stable-baselines3
 torch

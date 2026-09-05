@@ -1,0 +1,203 @@
+"""Command line interface.
+
+    python -m matchpredictor update              # refresh results + fixtures
+    python -m matchpredictor train               # fit model + calibration
+    python -m matchpredictor backtest            # walk-forward validation
+    python -m matchpredictor slip                # today's conviction picks
+    python -m matchpredictor slip --target 2.0 --bankroll 1000
+    python -m matchpredictor calibration         # show the reliability tables
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+
+import numpy as np
+import pandas as pd
+
+from . import backtest as bt
+from . import pipeline
+from .config import (DEFAULT_CONVICTION_CONFIG, DEFAULT_LEAGUES,
+                     DEFAULT_MODEL_CONFIG, ConvictionConfig)
+from .staking import build_plan, ladder
+
+
+def _hr(title: str) -> None:
+    print(f"\n{'=' * 78}\n{title}\n{'=' * 78}")
+
+
+# --------------------------------------------------------------------------
+def cmd_update(args) -> int:
+    _hr("UPDATING DATA")
+    leagues = args.leagues.split(",") if args.leagues else DEFAULT_LEAGUES
+    feat = pipeline.update_data(leagues, args.start_year, args.end_year,
+                                refresh=not args.no_refresh)
+    up = pipeline.upcoming(feat, days=7)
+    print(f"\n{len(up)} fixtures in the next 7 days.")
+    return 0
+
+
+def cmd_train(args) -> int:
+    _hr("TRAINING")
+    feat = pipeline.load_features()
+    seasons = args.calib_seasons.split(",") if args.calib_seasons else None
+    model, cal = pipeline.train(feat, seasons)
+    print("\nCalibration summary:")
+    for fam, fc in sorted(cal.families.items()):
+        print(f"  {fam:<16} n={fc.n_train:>8,}  "
+              f"Brier {fc.brier_raw:.4f} -> {fc.brier_cal:.4f}")
+    return 0
+
+
+def cmd_calibration(args) -> int:
+    _hr("CALIBRATION / RELIABILITY")
+    _, cal, meta = pipeline.load_artifacts()
+    if meta:
+        print(f"trained {meta.get('trained_at','?')} on {meta.get('n_train',0):,} matches")
+    print(cal.reliability_report())
+    return 0
+
+
+def cmd_backtest(args) -> int:
+    _hr("WALK-FORWARD BACKTEST")
+    feat = pipeline.load_features()
+    played = feat[feat["played"] == True]  # noqa: E712
+    seasons = (args.seasons.split(",") if args.seasons
+               else sorted(played["season"].unique())[-args.n_seasons:])
+    print(f"test seasons: {', '.join(seasons)}\n")
+
+    oos = bt.run_walkforward(feat, seasons, DEFAULT_MODEL_CONFIG)
+    print()
+    oos, cals = bt.calibrate_progressively(oos, seasons)
+
+    cfg = ConvictionConfig()
+    if args.min_prob is not None:
+        cfg.tiers = {k: max(v, args.min_prob) for k, v in cfg.tiers.items()}
+    if args.min_edge is not None:
+        cfg.min_edge = args.min_edge
+        cfg.min_edge_lock = args.min_edge
+
+    print()
+    bets = bt.evaluate_picks(oos, cals, cfg)
+
+    _hr("RESULTS BY CONVICTION TIER")
+    print(bt.tier_report(bets))
+    _hr("RESULTS BY SEASON")
+    print(bt.season_report(bets))
+    _hr("RESULTS BY MARKET")
+    print(bt.market_report(bets))
+
+    if args.save:
+        oos.to_parquet(args.save)
+        print(f"\nsaved out-of-sample predictions to {args.save}")
+    return 0
+
+
+def cmd_slip(args) -> int:
+    _hr("CONVICTION SLIP")
+    model, cal, meta = pipeline.load_artifacts()
+    feat = pipeline.load_features()
+    fixtures = pipeline.upcoming(feat, days=args.days)
+    if args.league:
+        fixtures = fixtures[fixtures["div"].isin(args.league.split(","))]
+    if len(fixtures) == 0:
+        print("No upcoming fixtures in the window. Run `update` first.")
+        return 1
+
+    betway = None
+    if args.prices:
+        with open(args.prices) as fh:
+            betway = json.load(fh)
+
+    cfg = ConvictionConfig()
+    if args.min_prob is not None:
+        cfg.tiers = {k: max(v, args.min_prob) for k, v in cfg.tiers.items()}
+    if args.real_prices_only:
+        cfg.require_market_price = True
+
+    picks, priced = pipeline.todays_picks(model, cal, fixtures, betway, cfg)
+    if args.real_prices_only:
+        picks = [p for p in picks if not p.price_is_estimate]
+
+    print(f"{len(fixtures)} fixtures scanned over the next {args.days} day(s).")
+    print(f"{len(picks)} selection(s) cleared every conviction gate.\n")
+
+    if not picks:
+        print("Nothing qualifies. That is a result, not a failure - the gates are")
+        print("there precisely so that a thin card produces silence rather than")
+        print("a manufactured opinion.")
+        return 0
+
+    for p in picks:
+        print(p.describe())
+        if p.price_is_estimate:
+            print("    NOTE: price is estimated. Enter the real Betway price before betting.")
+        print()
+
+    _hr(f"STAKING PLAN - target {args.target:.2f}x")
+    plan = build_plan(picks, target=args.target, max_legs=args.max_legs)
+    if plan is None:
+        print(f"No combination of today's picks reaches {args.target:.2f}x.")
+        print("Either the prices are too short or too few selections qualified.")
+    else:
+        print(plan.describe(stake=args.bankroll, currency=args.currency))
+
+    _hr("TARGET LADDER")
+    print("  target   shape    legs   chance of hitting   expected return")
+    print("  " + "-" * 62)
+    for pl in ladder(picks, max_legs=args.max_legs):
+        print(f"  {pl.target:>5.1f}x   {pl.kind:<7} {pl.n_legs:>4}   "
+              f"{pl.p_double*100:>15.1f}%   {(pl.ev-1)*100:>+13.1f}%")
+    return 0
+
+
+# --------------------------------------------------------------------------
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(prog="matchpredictor",
+                                 description="Calibrated high-conviction football match predictor")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("update", help="download results and fixtures, rebuild features")
+    p.add_argument("--leagues", default=None, help="comma-separated division codes")
+    p.add_argument("--start-year", type=int, default=2005)
+    p.add_argument("--end-year", type=int, default=2026)
+    p.add_argument("--no-refresh", action="store_true", help="use cache only")
+    p.set_defaults(func=cmd_update)
+
+    p = sub.add_parser("train", help="fit the model and calibration curves")
+    p.add_argument("--calib-seasons", default=None)
+    p.set_defaults(func=cmd_train)
+
+    p = sub.add_parser("calibration", help="print reliability tables")
+    p.set_defaults(func=cmd_calibration)
+
+    p = sub.add_parser("backtest", help="walk-forward validation")
+    p.add_argument("--seasons", default=None, help="comma-separated season codes")
+    p.add_argument("--n-seasons", type=int, default=8)
+    p.add_argument("--min-prob", type=float, default=None)
+    p.add_argument("--min-edge", type=float, default=None)
+    p.add_argument("--save", default=None)
+    p.set_defaults(func=cmd_backtest)
+
+    p = sub.add_parser("slip", help="today's conviction picks and staking plan")
+    p.add_argument("--days", type=int, default=2)
+    p.add_argument("--league", default=None)
+    p.add_argument("--target", type=float, default=2.0)
+    p.add_argument("--bankroll", type=float, default=1000.0)
+    p.add_argument("--currency", default="R")
+    p.add_argument("--max-legs", type=int, default=6)
+    p.add_argument("--min-prob", type=float, default=None)
+    p.add_argument("--prices", default=None,
+                   help="JSON file: {match_id: {market_key: betway_decimal_odds}}")
+    p.add_argument("--real-prices-only", action="store_true",
+                   help="drop selections whose price is only an estimate")
+    p.set_defaults(func=cmd_slip)
+
+    args = ap.parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
