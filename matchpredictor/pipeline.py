@@ -22,7 +22,7 @@ from .calibration import CalibratorSet
 from .config import (CACHE_DIR, DEFAULT_CONVICTION_CONFIG, DEFAULT_LEAGUES,
                      DEFAULT_MODEL_CONFIG, ConvictionConfig, ModelConfig)
 from .conviction import (Pick, Watch, build_watchlist, dedupe_one_per_match,
-                          select_picks)
+                          dedupe_watchlist_one_per_match, select_picks)
 from .features import build_features
 from .markets import ALL_MARKET_KEYS, derive_all, market_family
 from .model import MatchPredictor
@@ -258,8 +258,10 @@ def todays_picks(model: MatchPredictor, cal: CalibratorSet,
     watch = build_watchlist(rows, probs, comp, cal, cfg,
                             market_probs=comp["market"],
                             skip_keys=priced_keys, market_keys=keys)
-    seen = {p.match_id for p in picks}
-    watch = [w for w in watch if w.match_id not in seen] if one_per_match else watch
+    if one_per_match:
+        seen = {p.match_id for p in picks}
+        watch = dedupe_watchlist_one_per_match(
+            [w for w in watch if w.match_id not in seen])
     return picks, priced, watch
 
 

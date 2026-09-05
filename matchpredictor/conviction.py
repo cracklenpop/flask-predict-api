@@ -69,10 +69,21 @@ class Pick:
         ev_pct = self.ev * 100
         return (f"[{self.tier}] {self.home} v {self.away} ({self.div})\n"
                 f"    {self.selection}\n"
-                f"    model {self.prob*100:.1f}%   price {self.price:.2f} "
+                f"    model {fmt_prob(self.prob)}   price {self.price:.2f} "
                 f"(fair {self.fair_price:.2f})   edge {self.edge*100:+.1f}pts   EV {ev_pct:+.1f}%\n"
                 f"    track record in this band: {self.bin_rate*100:.1f}% over "
                 f"{self.bin_n:,} past bets   |   model spread {self.disagreement*100:.1f}pts")
+
+
+def fmt_prob(p: float) -> str:
+    """Format a probability for display, never as 100%.
+
+    A selection can sit at 0.9997 - a +3.5 handicap, say - and naive rounding
+    prints "100.0%", which is precisely the false certainty this whole system
+    exists to avoid. Nothing in football is certain, and the display must not
+    claim otherwise however close the number gets.
+    """
+    return f"{min(p, 0.999) * 100:.1f}%" if p < 0.9995 else ">99.9%"
 
 
 def kelly_fraction(p: float, price: float) -> float:
@@ -268,7 +279,7 @@ class Watch:
     def describe(self) -> str:
         return (f"[{self.tier}] {self.home} v {self.away} ({self.div})\n"
                 f"    {self.selection}\n"
-                f"    model {self.prob*100:.1f}%   fair {self.fair_price:.2f}   "
+                f"    model {fmt_prob(self.prob)}   fair {self.fair_price:.2f}   "
                 f"TAKE ONLY AT {self.min_price:.2f} OR BETTER\n"
                 f"    track record in this band: {self.bin_rate*100:.1f}% over "
                 f"{self.bin_n:,} past bets")
@@ -341,7 +352,15 @@ def build_watchlist(rows: pd.DataFrame,
             if denom <= 0:
                 continue
             min_price = 1.0 / denom
-            if min_price > cfg.max_odds:
+
+            # Apply the same price-sanity band the fully-priced path applies.
+            # Without this the watchlist fills with near-certainties - a +3.5
+            # handicap, "over 0.5 goals" - which are true almost always and
+            # therefore priced around 1.01, where no bookmaker takes the bet and
+            # no amount of being right earns anything. They are the most
+            # confident selections available and the least useful, so a
+            # confidence-ranked list is exactly the wrong way to surface them.
+            if min_price < cfg.min_odds or min_price > cfg.max_odds:
                 continue
 
             out.append(Watch(
@@ -354,5 +373,25 @@ def build_watchlist(rows: pd.DataFrame,
             ))
 
     rank = {"LOCK": 0, "STRONG": 1, "LEAN": 2}
-    out.sort(key=lambda w: (rank[w.tier], -w.prob))
+    out.sort(key=lambda w: (rank[w.tier], -w.prob, w.min_price))
+    return out
+
+
+def dedupe_watchlist_one_per_match(watch: list[Watch]) -> list[Watch]:
+    """Keep the single best watchlist entry per fixture.
+
+    Without this the list runs to hundreds of rows: every handicap line,
+    every total and every double chance on the same match clears the gates
+    together, because they are all restatements of one underlying opinion.
+    Worse, they are correlated, so a reader picking several as parlay legs
+    would be stacking the same bet on itself while believing it diversified.
+    """
+    best: dict[str, Watch] = {}
+    rank = {"LOCK": 0, "STRONG": 1, "LEAN": 2}
+    for w in watch:
+        cur = best.get(w.match_id)
+        if cur is None or (rank[w.tier], -w.prob, w.min_price) < (rank[cur.tier], -cur.prob, cur.min_price):
+            best[w.match_id] = w
+    out = list(best.values())
+    out.sort(key=lambda w: (rank[w.tier], -w.prob, w.min_price))
     return out

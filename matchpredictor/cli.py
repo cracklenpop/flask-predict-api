@@ -136,11 +136,59 @@ def cmd_slip(args) -> int:
         print("thing not verified is the price, because the free feed does not quote")
         print("these markets. Look each one up: if Betway's price is at or above")
         print("the stated minimum, it clears the same edge bar as the picks above.\n")
+        top = {round(w.prob, 3) for w in watch[:args.max_watch]}
+        if len(top) == 1:
+            print("Note: these all show the same probability because calibration")
+            print("caps out there - the historical record cannot reliably tell")
+            print("apart anything above about 92%, so it declines to pretend it")
+            print("can. Their ordering among themselves is not meaningful.\n")
         for w in watch[:args.max_watch]:
             print(w.describe()); print()
         if len(watch) > args.max_watch:
             print(f"    ... and {len(watch)-args.max_watch} more "
                   f"(raise --max-watch to see them)\n")
+
+        # Build the target plan the watchlist could support IF the prices are
+        # there. Stated conditionally on purpose: these are not quotes.
+        from .conviction import Pick as _Pick
+        proxy = [_Pick(match_id=w.match_id, date=w.date, div=w.div, home=w.home,
+                       away=w.away, market=w.market, selection=w.selection,
+                       prob=w.prob, prob_raw=w.prob, price=w.min_price,
+                       fair_price=w.fair_price, edge=0.0, ev=w.prob * w.min_price - 1,
+                       tier=w.tier, disagreement=w.disagreement, bin_n=w.bin_n,
+                       bin_rate=w.bin_rate, kelly=0.0, price_is_estimate=True)
+                 for w in watch]
+        cond = build_plan(proxy, target=args.target, max_legs=args.max_legs)
+        _hr(f"IF YOU CAN GET THOSE PRICES - route to {args.target:.2f}x")
+        if cond is None:
+            import math as _math
+            med = float(np.median([w.min_price for w in watch])) if watch else 0.0
+            need = int(_math.ceil(_math.log(args.target) / _math.log(med))) if med > 1.001 else 0
+            print(f"No combination of at most {args.max_legs} legs reaches "
+                  f"{args.target:.2f}x, even at the minimum acceptable prices.")
+            if need:
+                p_all = 0.92 ** need
+                print(f"At a typical {med:.2f} per leg you would need about {need} legs,")
+                print(f"which lands roughly {p_all*100:.0f}% of the time before allowing")
+                print(f"for the model running optimistic. Raise --max-legs to {need} to")
+                print(f"see that plan, but understand what you are buying: each extra")
+                print(f"leg multiplies in another chance to lose the whole stake.")
+        else:
+            print("Conditional on Betway actually offering at least the stated")
+            print("minimum on every leg. These are requirements, not quotes.\n")
+            for legs, share, odds, pp in zip(cond.legs, cond.stake_share,
+                                             cond.combined_odds, cond.leg_probs):
+                print(f"  Stake {args.currency}{args.bankroll*share:,.2f} "
+                      f"@ {odds:.2f} -> {args.currency}{args.bankroll*share*odds:,.2f}")
+                for lg in legs:
+                    print(f"    - {lg.home} v {lg.away}: {lg.selection} "
+                          f"(need {lg.price:.2f}+)")
+            print(f"\n  Chance all legs land: {cond.p_double*100:.1f}%")
+            print(f"  Chance you lose the stake: {(1-cond.p_double)*100:.1f}%")
+            print("\n  Backtest note: selections like these landed about 4.8 points")
+            print("  below their stated probability, so treat the figure above as")
+            print("  optimistic. See MATCH_PREDICTOR.md for the measured numbers.")
+        print()
 
     if not picks:
         print("No fully-priced selection qualifies today. That is a result, not a")
@@ -202,7 +250,7 @@ def main(argv=None) -> int:
     p.add_argument("--target", type=float, default=2.0)
     p.add_argument("--bankroll", type=float, default=1000.0)
     p.add_argument("--currency", default="R")
-    p.add_argument("--max-legs", type=int, default=6)
+    p.add_argument("--max-legs", type=int, default=8)
     p.add_argument("--min-prob", type=float, default=None)
     p.add_argument("--prices", default=None,
                    help="JSON file: {match_id: {market_key: betway_decimal_odds}}")
